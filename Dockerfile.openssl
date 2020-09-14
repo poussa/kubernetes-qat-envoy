@@ -1,23 +1,27 @@
-FROM clearlinux:base as builder
+FROM ubuntu:18.04 as builder
 
 ARG QAT_DRIVER_RELEASE="qat1.7.l.4.10.0-00014"
 ARG QAT_ENGINE_VERSION="v0.5.46"
 ARG IPSEC_MB_VERSION="v0.54"
+ARG IPP_CRYPTO_VERSION="ippcp_2020u2"
 
-RUN swupd update && \
-    swupd bundle-add \
-    --skip-diskspace-check \
-    --no-boot-update \
-    devpkg-systemd \
-    devpkg-openssl \
-    c-basic \
-    curl \
-    git \
-    llvm9 \
-    python3-basic \
-    os-core-dev && \
+RUN apt-get update -y && \
+    apt-get upgrade -y && \
+    apt-get install -y \
+      build-essential \
+      git \
+      curl \
+      pkg-config \
+      libudev-dev \
+      libssl-dev \
+      unzip \
+      python3 \
+      python3-pip \
+      cmake \
+      libtool \
+      ninja-build && \
     git clone -b $QAT_ENGINE_VERSION https://github.com/intel/QAT_Engine && \
-    git clone https://github.com/intel/ipp-crypto && \
+    git clone -b $IPP_CRYPTO_VERSION https://github.com/intel/ipp-crypto && \
     git clone -b $IPSEC_MB_VERSION https://github.com/intel/intel-ipsec-mb && \
     mkdir QAT_Lib && cd QAT_Lib && \
     curl -L https://01.org/sites/default/files/downloads/$QAT_DRIVER_RELEASE.tar.gz | tar zx
@@ -36,6 +40,22 @@ WORKDIR /
 COPY . .
 
 ENV HOME /root
+
+ARG LLVM_VERSION=9.0.0
+ARG LLVM_TARGET=x86_64-linux-gnu-ubuntu-18.04
+ARG LLVM_BASE_URL=http://releases.llvm.org/${LLVM_VERSION}
+ARG LLVM_ARCHIVE=clang+llvm-${LLVM_VERSION}-${LLVM_TARGET}
+ARG LLVM_URL=${LLVM_BASE_URL}/${LLVM_ARCHIVE}.tar.xz
+ARG LLVM_DIRECTORY=/usr/lib/llvm
+ARG LLVM_CONFIG=${LLVM_DIRECTORY}/bin/llvm-config
+RUN curl -LO  ${LLVM_URL} && \
+    tar -xJf ${LLVM_ARCHIVE}.tar.xz -C /tmp && \
+    mkdir -p ${LLVM_DIRECTORY} && \
+    mv /tmp/${LLVM_ARCHIVE}/* ${LLVM_DIRECTORY}/ && \
+    rm -f ${LLVM_ARCHIVE}.tar.xz && \
+    echo "${LLVM_DIRECTORY}/lib" | tee /etc/ld.so.conf.d/llvm.conf && \
+    ldconfig
+ENV PATH="${LLVM_DIRECTORY}/bin:${PATH}"
 RUN eval $(cut -d = -f 2- < clang.bazelrc) && \
     echo "build:clang --linkopt=-L$($LLVM_CONFIG --libdir)" >> clang.bazelrc && \
     echo "build:clang --linkopt=-Wl,-rpath,$($LLVM_CONFIG --libdir)" >> clang.bazelrc
@@ -44,14 +64,14 @@ RUN curl -LO https://github.com/bazelbuild/bazel/releases/download/3.4.1/bazel-3
     ./bazel-3.4.1-installer-linux-x86_64.sh --user
 
 ARG BAZEL_EXTRA_BUILD_ARGS=
-
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 5
 RUN /root/.bazel/bin/bazel build -c opt $BAZEL_EXTRA_BUILD_ARGS //:envoy --host_force_python=PY3
 
 WORKDIR /ipp-crypto/sources/ippcp/crypto_mb
 
 RUN cmake . -B"../build" \
     -DOPENSSL_INCLUDE_DIR=/usr/include/openssl \
-    -DOPENSSL_LIBRARIES=/usr/lib64 \
+    -DOPENSSL_LIBRARIES=/usr/lib/x86_64-linux-gnu \
     -DOPENSSL_ROOT_DIR=/usr/bin/openssl && \
     cd ../build && \
     make crypto_mb && make install && \
@@ -59,41 +79,41 @@ RUN cmake . -B"../build" \
     install -m 755 bin/vfy_ifma_rsa_mb /usr/bin/
 
 WORKDIR /intel-ipsec-mb
-RUN make && make install LIB_INSTALL_DIR=/usr/lib64
+RUN make && make install LIB_INSTALL_DIR=/usr/lib/x86_64-linux-gnu
 
 WORKDIR /QAT_Engine
 RUN ./autogen.sh && \
     ./configure \
     --enable-ipsec_offload \
     --enable-multibuff_offload \
-    --with-openssl_install_dir=/usr/lib64 \
+    --with-openssl_install_dir=/usr/lib/x86_64-linux-gnu \
     --with-multibuff_install_dir=/usr/local \
     --enable-openssl_install_build_arch_path && \
     sed -i -e 's:^\(const char \*engine_qat_id = \).*:\1"avx512";:' e_qat.c && \
     make && make install && \
-    mv /usr/lib64/engines-1.1/qat.so /usr/lib64/engines-1.1/avx512.so && \
+    mv /usr/lib/x86_64-linux-gnu/engines-1.1/qat.so /usr/lib/x86_64-linux-gnu/engines-1.1/avx512.so && \
     make clean && git restore e_qat.c && \
     ./configure \
     --with-qat_dir=/QAT_Lib \
     --disable-ipsec_offload \
     --disable-multibuff_offload \
-    --with-openssl_install_dir=/usr/lib64 \
+    --with-openssl_install_dir=/usr/lib/x86_64-linux-gnu \
     --with-qat_install_dir=/usr/lib \
     --enable-openssl_install_build_arch_path && \
     make && make install
 
 FROM clearlinux:base
 
-COPY --from=builder /usr/lib64/libstdc++.so.6 /usr/lib64
-COPY --from=builder /usr/lib/libqat_s.so /usr/lib64
-COPY --from=builder /usr/lib/libusdm_drv_s.so /usr/lib64
-COPY --from=builder /usr/lib64/libIPSec_MB.so.0 /usr/lib64/
-COPY --from=builder /usr/lib64/lib/libqat.so /usr/lib64
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib/x86_64-linux-gnu
+COPY --from=builder /usr/lib/libqat_s.so /usr/lib/x86_64-linux-gnu
+COPY --from=builder /usr/lib/libusdm_drv_s.so /usr/lib/x86_64-linux-gnu
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libIPSec_MB.so.0 /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/lib/libqat.so /usr/lib/x86_64-linux-gnu
 COPY --from=builder /usr/bin/adf_ctl /usr/bin
 COPY --from=builder /usr/bin/vfy_ifma_cp_rsa_mb /usr/bin
 COPY --from=builder /usr/bin/vfy_ifma_rsa_mb /usr/bin
-COPY --from=builder /usr/lib64/engines-1.1/avx512.so /usr/lib64/engines-1.1/avx512.so
-COPY --from=builder /usr/lib64/engines-1.1/qat.so /usr/lib64/engines-1.1
+COPY --from=builder /usr/lib/x86_64-linux-gnu/engines-1.1/avx512.so /usr/lib/x86_64-linux-gnu/engines-1.1/avx512.so
+COPY --from=builder /usr/lib/x86_64-linux-gnu/engines-1.1/qat.so /usr/lib/x86_64-linux-gnu/engines-1.1
 COPY --from=builder /bazel-bin/envoy /envoy-static
 COPY --from=builder /QAT_Lib/LICENSE.GPL /usr/share/package-licenses/libqat/LICENSE.GPL
 COPY --from=builder /QAT_Engine/LICENSE /usr/share/package-licenses/QAT_Engine/LICENSE

@@ -13,7 +13,7 @@ http_archive(
 new_local_repository(
     name = "openssl",
     build_file = "envoy-openssl/openssl_host_shared.BUILD",
-    path = "/usr/lib64",
+    path = "/usr/lib/x86_64-linux-gnu",
 )
 
 new_local_repository(
