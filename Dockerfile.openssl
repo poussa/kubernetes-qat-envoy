@@ -1,4 +1,4 @@
-FROM ubuntu:18.04 as builder
+FROM ubuntu:20.04 as builder
 
 ARG QAT_DRIVER_RELEASE="qat1.7.l.4.10.0-00014"
 ARG QAT_ENGINE_VERSION="v0.5.46"
@@ -6,9 +6,9 @@ ARG IPSEC_MB_VERSION="v0.54"
 ARG IPP_CRYPTO_VERSION="ippcp_2020u2"
 
 RUN apt-get update -y && \
-    apt-get upgrade -y && \
-    apt-get install -y \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
       build-essential \
+      autoconf \
       git \
       curl \
       pkg-config \
@@ -18,7 +18,9 @@ RUN apt-get update -y && \
       python3 \
       python3-pip \
       cmake \
+      nasm \
       libtool \
+      libtinfo5 \
       ninja-build && \
     git clone -b $QAT_ENGINE_VERSION https://github.com/intel/QAT_Engine && \
     git clone -b $IPP_CRYPTO_VERSION https://github.com/intel/ipp-crypto && \
@@ -26,6 +28,7 @@ RUN apt-get update -y && \
     mkdir QAT_Lib && cd QAT_Lib && \
     curl -L https://01.org/sites/default/files/downloads/$QAT_DRIVER_RELEASE.tar.gz | tar zx
 
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 5
 WORKDIR /QAT_Lib
 
 RUN sed -i -e 's/cmn_ko$//' -e 's/lac_kernel$//' quickassist/Makefile && \
@@ -36,9 +39,6 @@ RUN sed -i -e 's/cmn_ko$//' -e 's/lac_kernel$//' quickassist/Makefile && \
     install -m 755 build/adf_ctl /usr/bin/
 
 WORKDIR /
-
-COPY . .
-
 ENV HOME /root
 
 ARG LLVM_VERSION=9.0.0
@@ -63,8 +63,12 @@ RUN curl -LO https://github.com/bazelbuild/bazel/releases/download/3.4.1/bazel-3
     chmod +x bazel-3.4.1-installer-linux-x86_64.sh && \
     ./bazel-3.4.1-installer-linux-x86_64.sh --user
 
+COPY BUILD *.BUILD WORKSPACE clang.bazelrc user.bazelrc .bazelrc .bazelversion .git ./
+ADD envoy ./envoy/
+ADD envoy-openssl ./envoy-openssl/
+ADD envoy_qatzip ./envoy_qatzip/
+
 ARG BAZEL_EXTRA_BUILD_ARGS=
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 5
 RUN /root/.bazel/bin/bazel build -c opt $BAZEL_EXTRA_BUILD_ARGS //:envoy --host_force_python=PY3
 
 WORKDIR /ipp-crypto/sources/ippcp/crypto_mb
@@ -102,12 +106,12 @@ RUN ./autogen.sh && \
     --enable-openssl_install_build_arch_path && \
     make && make install
 
-FROM clearlinux:base
+FROM ubuntu:20.04
 
 COPY --from=builder /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib/x86_64-linux-gnu
 COPY --from=builder /usr/lib/libqat_s.so /usr/lib/x86_64-linux-gnu
 COPY --from=builder /usr/lib/libusdm_drv_s.so /usr/lib/x86_64-linux-gnu
-COPY --from=builder /usr/lib/x86_64-linux-gnu/libIPSec_MB.so.0 /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libIPSec_MB.so.0 /usr/lib/x86_64-linux-gnu
 COPY --from=builder /usr/lib/x86_64-linux-gnu/lib/libqat.so /usr/lib/x86_64-linux-gnu
 COPY --from=builder /usr/bin/adf_ctl /usr/bin
 COPY --from=builder /usr/bin/vfy_ifma_cp_rsa_mb /usr/bin
